@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::sleep(Duration::from_secs(5));
 
     c.update(|mut p| {
-       p.my_field = "hello world again".to_string()
+       p.my_field = "hello world".to_string()
     });
 
     std::thread::sleep(Duration::from_secs(15));

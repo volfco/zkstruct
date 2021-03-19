@@ -117,8 +117,16 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
             }
         }
 
+        // pre change
+        let a = serde_json::to_value(&*inner).unwrap();
+
         // at this point, we should have an exclusive lock on the object so we execute the closure
         closure(&mut inner);
+
+        // post change
+        let b = serde_json::to_value(&*inner).unwrap();
+
+        emit_updates(&a, &b, &state);
 
         let raw_data = serde_json::to_vec(&*inner).unwrap();
         let update_op = self.zk.set_data(path.as_str(), raw_data, Some(state.epoch));
@@ -155,6 +163,7 @@ fn handle_zk_watcher<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static
     }
 }
 
+#[derive(PartialEq)]
 pub enum Change<K, V> {
     /// The Value was removed
     Removed(Vec<K>, V),
@@ -184,41 +193,12 @@ fn state_change<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static>(zk:
     // of updating.
     let mut a_handle = inner.write().unwrap();
     let mut state = state.write().unwrap();
-
     let b: serde_json::Value = serde_json::from_slice(&*raw_obj.0).unwrap();
 
     // only do a delta if we want to emit updates
     if state.emit_updates {
         let a: serde_json::Value = serde_json::to_value(&*a_handle).unwrap();
-
-        let mut delta = treediff::tools::Recorder::default();
-        diff(&a, &b, &mut delta);
-
-        let mut ops = (0, 0, 0, 0);
-        for change in delta.calls {
-            let op = match change {
-                ChangeType::Added(k, v) => {
-                    ops.0 += 1;
-                    Change::Added(k.clone(), v.clone())
-                },
-                ChangeType::Removed(k, v) => {
-                    ops.1 += 1;
-                    Change::Removed(k.clone(), v.clone())
-                },
-                ChangeType::Modified(k, a, v) => {
-                    ops.2 += 1;
-                    Change::Modified(k.clone(), a.clone(), v.clone())
-                },
-                ChangeType::Unchanged(_, _) => {
-                    ops.3 += 1;
-                    Change::Unchanged()
-                },
-            };
-            let _insert = state.chan_tx.send(op);
-        }
-        log::debug!("{} added, {} removed, {} modified, {} noop", ops.0, ops.1, ops.2, ops.3);
-
-        // TODO We might want to have a way to prevent the state from unlocking while changes are being processed
+        emit_updates(&a, &b, &state);
     }
 
     *a_handle = serde_json::from_value(b).unwrap();
@@ -228,4 +208,36 @@ fn state_change<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static>(zk:
     drop(state);    // drop the write handle for the state object
 
     log::debug!("took {}ms to handle state change", start.elapsed().as_millis());
+}
+
+fn emit_updates(a: &serde_json::Value, b: &serde_json::Value, state: &InternalState) {
+    let mut delta = treediff::tools::Recorder::default();
+    diff(a, b, &mut delta);
+
+    let mut ops = (0, 0, 0, 0);
+    for change in delta.calls {
+        let op = match change {
+            ChangeType::Added(k, v) => {
+                ops.0 += 1;
+                Change::Added(k.clone(), v.clone())
+            },
+            ChangeType::Removed(k, v) => {
+                ops.1 += 1;
+                Change::Removed(k.clone(), v.clone())
+            },
+            ChangeType::Modified(k, a, v) => {
+                ops.2 += 1;
+                Change::Modified(k.clone(), a.clone(), v.clone())
+            },
+            ChangeType::Unchanged(_, _) => {
+                ops.3 += 1;
+                Change::Unchanged()
+            },
+        };
+        if op != Change::Unchanged() {
+            let _insert = state.chan_tx.send(op);
+        }
+    }
+    log::debug!("{} added, {} removed, {} modified, {} noop", ops.0, ops.1, ops.2, ops.3);
+
 }
