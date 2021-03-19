@@ -9,7 +9,7 @@ keywords = ["zookeeper", "shared-state"]
 categories = ["concurrency"]
 homepage = "https://rust.volf.co/zkstate"
 repository = "https://github.com/volfco/zkstate"
-readme = "README"
+readme = "README.md"
 
 
 [dependencies]
