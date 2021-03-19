@@ -1,10 +1,16 @@
 [package]
 name = "zkstate"
-version = "0.1.0"
+description = "A "
+version = "0.1.2"
 authors = ["Colum McGaley <colum.mcgaley@fastmail.com>"]
 edition = "2018"
+license = "Apache-2.0"
+keywords = ["zookeeper", "shared-state"]
+categories = ["concurrency"]
+homepage = "https://rust.volf.co/zkstate"
+repository = "https://github.com/volfco/zkstate"
+readme = "README"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 zookeeper = "0.5"
