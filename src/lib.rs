@@ -34,6 +34,7 @@ struct InternalState {
     chan_rx: crossbeam_channel::Receiver<Change<Key, serde_json::Value>>,
     chan_tx: crossbeam_channel::Sender<Change<Key, serde_json::Value>>,
 }
+#[derive(Clone)]
 pub struct ZkState<T: Serialize + DeserializeOwned + Send + Sync> {
     /// ZooKeeper client
     zk: Arc<ZooKeeper>,
@@ -92,7 +93,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
     ///
     /// The closure is passed a reference to the contents of the ZkState. Once the closure returns,
     /// the shared state in Zookeeper is committed and the write locks released.
-    pub fn update<M: FnOnce(&T) -> ()>(self, closure: M) -> Result<(), ZkStructError> {
+    pub fn update<M: FnOnce(&mut T) -> ()>(self, closure: M) -> Result<(), ZkStructError> {
         let path = format!("{}/payload", &self.state.read().unwrap().zk_path);
 
         // acquire write lock for the internal object
@@ -140,6 +141,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
     /// Returns a LockResult<RwLockReadGuard<T>>
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
         self.inner.read()
+    }
+
+    pub fn metadata(&self) -> (usize, i32) {
+        return (self.state.read().unwrap().chan_rx.len(), 0)
     }
 }
 

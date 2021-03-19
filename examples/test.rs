@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 use std::time::Duration;
 use std::sync::Arc;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Testing {
     my_field: String
 }
@@ -33,7 +33,7 @@ fn update<T: FnOnce(&mut Testing)>(i: Testing, c: T) {
 
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let zk_urls = zk_server_urls();
@@ -42,12 +42,24 @@ fn main() {
 
     let dir = "/testing-zkstruct".to_string();
 
-    let c = zkstate::ZkState::new(zka.clone(),dir, Testing { my_field: "yoyo".to_string() });
+    let c = zkstate::ZkState::new(zka.clone(),dir, Testing { my_field: "yoyo".to_string() })?;
 
-    let mut t = Testing { my_field: "hello world".to_string() };
-    update(t, |input|{
-        input.my_field = "updated value".to_string()
+    let th = c.clone();
+    std::thread::spawn(move || {
+        let th = th;
+        loop {
+            println!("my data is {:?} and I have {} changes pending", th.read().unwrap(), th.metadata().0);
+            std::thread::sleep(Duration::from_secs(1));
+        }
     });
 
+    std::thread::sleep(Duration::from_secs(5));
 
+    c.update(|mut p| {
+       p.my_field = "hello world again".to_string()
+    });
+
+    std::thread::sleep(Duration::from_secs(15));
+
+    Ok(())
 }
