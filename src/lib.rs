@@ -89,11 +89,24 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         Ok(())
     }
 
+    /// Method to be invoked to handle state change notifications
+    pub fn update_handler<M: Fn(Change<Key, serde_json::Value>) -> () + Send + 'static>(&self, closure: M) -> Result<(), ZkStructError> {
+        let chan_handle = self.state.read().unwrap().chan_rx.clone();
+        thread::spawn(move || {
+            let rx = chan_handle;
+            loop {
+                let message = rx.recv().unwrap();
+                closure(message);
+            }
+        });
+        Ok(())
+    }
+
     /// Update the shared object using a closure.
     ///
     /// The closure is passed a reference to the contents of the ZkState. Once the closure returns,
     /// the shared state in Zookeeper is committed and the write locks released.
-    pub fn update<M: FnOnce(&mut T) -> ()>(self, closure: M) -> Result<(), ZkStructError> {
+    pub fn update<M: FnOnce(&mut T) -> ()>(&self, closure: M) -> Result<(), ZkStructError> {
         let path = format!("{}/payload", &self.state.read().unwrap().zk_path);
 
         // acquire write lock for the internal object
@@ -143,6 +156,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         drop(inner); // drop the write lock on the inner object
         drop(state); // drop the write lock on the internal state object
 
+        latch.stop()?;
+
         Ok(())
     }
 
@@ -163,7 +178,7 @@ fn handle_zk_watcher<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Change<K, V> {
     /// The Value was removed
     Removed(Vec<K>, V),

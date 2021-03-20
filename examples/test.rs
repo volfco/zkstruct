@@ -44,6 +44,10 @@ fn main() -> anyhow::Result<()> {
 
     let c = zkstate::ZkState::new(zka.clone(),dir, Testing { my_field: "yoyo".to_string() })?;
 
+    c.update_handler(|msg| {
+        println!("got stage change message: {:?}", msg);
+    });
+
     let th = c.clone();
     std::thread::spawn(move || {
         let th = th;
@@ -56,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::sleep(Duration::from_secs(5));
 
     c.update(|mut p| {
-       p.my_field = "hello world".to_string()
+       p.my_field = "hello world again".to_string()
     });
 
     std::thread::sleep(Duration::from_secs(15));
