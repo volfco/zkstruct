@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
        p.my_field = "hello world again".to_string()
     });
 
-    std::thread::sleep(Duration::from_secs(15));
+    std::thread::sleep(Duration::from_secs(45));
 
     Ok(())
 }

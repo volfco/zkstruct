@@ -19,21 +19,52 @@ library will register the change, either from a Watcher event or refresh event, 
 The library will do a diff on the local state, emit all changes to a channel you can subscribe to, and then update the
 local state. 
 
-There is no strong guarantee of consistency (yet). The library does not depend on Zookeeper Watchers firing to ensure
-consistency, but this is the primary way updates are committed. There are background processes that will poll the epoch
-of the object and compare to the local version (by default, every 5s) and compare the full state (by default, every 
-30s). As it stands, writes are not guaranteed to be committed before they return and reads are not guaranteed to be 
-fresh.
 
+## reads
+Reads using `.read()` are not guaranteed to be fresh, and might be out of date. There is an eventual guarantee that the 
+data will be consistent, as reads will fail if the object has not been verified consistent within a certain time 
+(default is 30 seconds).
+
+Reads using `.c_read()` are guaranteed to be fresh, as the local object version is compared to the zookeeper version. 
+This will, of course, be slower as the client needs to request data from zookeeper and compare it before it will be 
+returned, but you can be sure that the data being returned is correct.
+
+## writes
+There are two write guarantees:
+1. You will always update the latest version of the object. If the local version of the object does not match the
+version in zookeeper, the update request will fail with an error.
+2. Only one update operation can take place at a time, either locally or among clients. An exclusive write lock is used 
+both internally, and in zookeeper to prevent any unexpected updates or data loss. 
+
+# Update Stream
+Any changes, either local or remote, can be consumed and acted on. All clients can subscribe to a stream of changes to 
+the local object. This can be done using the `.update_handler` method to attach a closure that will be caused everytime
+there is change registered.
+
+There are 4 change types:
+1. Added
+2. Modified
+3. Removed
+4. Unchanged
+
+Each Enum will come with the names of keys updated, and `serde_json::Value` body that contains the values added or
+removed. Modified changes will return the old and new values. Unchanged results are not enqueued and therefore not
+returned. 
+
+```rust
+shared_state.update_handler(|msg| {
+    println!("got stage change message: {:?}", msg);
+});
+```
+
+Changes are emitted before the local object is updated, but the local object can be updated before all messages in the 
+channel can be consumed. 
 
 # zookeeper structure
 ```text
-
 /<dir>                  Where the Data will be stored
-/<dir>/epoch            Epoch of the payload
 /<dir>/payload          JSON Payload
-/<dir>/listeners        Empirical records with the IDs of every listener active
-
+/<dir>/listeners        Ephemeral records with the IDs of every listener active
 ```
 
 

@@ -1,5 +1,5 @@
 use zookeeper::{ZooKeeper, WatchedEvent, WatchedEventType, ZkError, ZkResult};
-use std::sync::{Arc, RwLock, LockResult};
+use std::sync::{Arc, RwLock, LockResult, PoisonError};
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
 use treediff::{value::Key, diff, tools::ChangeType};
@@ -8,16 +8,20 @@ use std::thread;
 use anyhow::Context;
 use std::sync::RwLockReadGuard;
 
+const MAX_TIMING_DELTA: i64 = 30000; // ms
 const LOCK_POLL_INTERVAL: u64 = 5; // ms
 const LOCK_POLL_TIMEOUT: u64 = 1000; // ms
 
+#[derive(Debug)]
 pub enum ZkStructError {
     /// Timed out when trying to lock the struct for writing
     LockAcquireTimeout,
+    StaleRead,
     /// The expected version of the object does not match the remote version.
     StaleWrite,
 
-    ZkError(ZkError)
+    ZkError(ZkError),
+    Poisoned
 }
 
 struct InternalState {
@@ -26,14 +30,15 @@ struct InternalState {
 
     /// Known epoch of the local object. Compared to the remote epoch
     epoch: i32,
-    /// Last time the epoch was checked, Last recorded state change, last full comparison
-    timings: (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+    /// Last time the inner object was sync
+    timings: chrono::DateTime<chrono::Utc>,
     
     emit_updates: bool,
 
     chan_rx: crossbeam_channel::Receiver<Change<Key, serde_json::Value>>,
     chan_tx: crossbeam_channel::Sender<Change<Key, serde_json::Value>>,
 }
+
 #[derive(Clone)]
 pub struct ZkState<T: Serialize + DeserializeOwned + Send + Sync> {
     /// ZooKeeper client
@@ -55,7 +60,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
             state: Arc::new(RwLock::new(InternalState {
                 zk_path,
                 epoch: 0,
-                timings: (chrono::Utc::now(), chrono::Utc::now(), chrono::Utc::now()),
+                timings: chrono::Utc::now(),
                 emit_updates: true,
                 chan_rx,
                 chan_tx
@@ -156,15 +161,33 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         drop(inner); // drop the write lock on the inner object
         drop(state); // drop the write lock on the internal state object
 
-        latch.stop()?;
+        if let Err(inner) = latch.stop() {
+            return Err(ZkStructError::ZkError(inner));
+        }
 
         Ok(())
     }
 
-    /// Returns a LockResult<RwLockReadGuard<T>>
-    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
-        self.inner.read()
+    /// Returns a Result<RwLockReadGuard<T>>
+    pub fn read(&self) -> Result<RwLockReadGuard<'_, T>, ZkStructError> {
+        let delta = (chrono::Utc::now() - self.state.read().unwrap().timings).num_milliseconds();
+        if delta > MAX_TIMING_DELTA {
+            log::error!("attempted to read stale data. data is {}ms old, limit is {}ms", &delta, MAX_TIMING_DELTA);
+            return Err(ZkStructError::StaleRead)
+        }
+        log::debug!("reading internal data. data is {}ms old, limit is {}ms", &delta, MAX_TIMING_DELTA);
+
+        match self.inner.read() {
+            Ok(inner) => Ok(inner),
+            Err(_) => Err(ZkStructError::Poisoned)
+        }
     }
+
+    /// Consistent Read.
+    ///
+    /// Preforms a check to make sure the local version is the same as the remote version before
+    /// returning. If there is a mismatch, will preform a sync and return the latest object
+    pub fn c_read(&self) { }
 
     pub fn metadata(&self) -> (usize, i32) {
         return (self.state.read().unwrap().chan_rx.len(), 0)
@@ -218,6 +241,7 @@ fn state_change<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static>(zk:
 
     *a_handle = serde_json::from_value(b).unwrap();
     state.epoch = raw_obj.1.version;
+    state.timings = chrono::Utc::now();
 
     drop(a_handle); // drop the write handle for the internal object
     drop(state);    // drop the write handle for the state object
