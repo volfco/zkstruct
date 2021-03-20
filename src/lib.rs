@@ -2,7 +2,7 @@ use zookeeper::{ZooKeeper, WatchedEvent, WatchedEventType, ZkError, ZkResult};
 use std::sync::{Arc, RwLock, LockResult, PoisonError};
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
-use treediff::{value::Key, diff, tools::ChangeType};
+pub use treediff::{value::Key, diff, tools::ChangeType};
 use std::time::{Instant, Duration};
 use std::thread;
 use anyhow::Context;
