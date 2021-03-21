@@ -7,6 +7,8 @@ use std::time::{Instant, Duration};
 use std::thread;
 use anyhow::Context;
 use std::sync::RwLockReadGuard;
+use serde_json::Value;
+use crossbeam_channel::Receiver;
 
 const MAX_TIMING_DELTA: i64 = 30000; // ms
 const LOCK_POLL_INTERVAL: u64 = 5; // ms
@@ -105,6 +107,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
             }
         });
         Ok(())
+    }
+
+    /// Return a reference to the Crossbeam Receiver to get Change notifications
+    pub fn get_update_channel(&self) -> Receiver<Change<Key, Value>> {
+        self.state.read().unwrap().chan_rx.clone()
     }
 
     /// Update the shared object using a closure.
