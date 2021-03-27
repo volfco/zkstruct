@@ -1,11 +1,10 @@
 use zookeeper::{ZooKeeper, WatchedEvent, WatchedEventType, ZkError, ZkResult};
-use std::sync::{Arc, RwLock, LockResult, PoisonError};
+use std::sync::{Arc, RwLock};
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
 pub use treediff::{value::Key, diff, tools::ChangeType};
 use std::time::{Instant, Duration};
 use std::thread;
-use anyhow::Context;
 use std::sync::RwLockReadGuard;
 use serde_json::Value;
 use crossbeam_channel::Receiver;
@@ -24,6 +23,11 @@ pub enum ZkStructError {
 
     ZkError(ZkError),
     Poisoned
+}
+impl From<ZkError> for ZkStructError {
+    fn from(error: ZkError) -> ZkStructError {
+        ZkStructError::ZkError(error)
+    }
 }
 
 struct InternalState {
@@ -54,6 +58,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
 
     pub fn new(zk: Arc<ZooKeeper>, zk_path: String, initial_state: T) -> anyhow::Result<Self> {
         let instance_id = uuid::Uuid::new_v4();
+        log::debug!("starting zkstate");
+
         let (chan_tx, chan_rx) = crossbeam_channel::unbounded();
         let r = Self {
             id: instance_id.to_string(),
@@ -88,16 +94,16 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         log::debug!("{} exists, continuing initialization", &path);
 
         state_change(self.zk.clone(), self.inner.clone(), self.state.clone());
-        // Create a thread that will preform consistency monitoring
-        thread::spawn(|| {
-
-        });
+        // // Create a thread that will preform consistency monitoring
+        // thread::spawn(|| {
+        //
+        // });
 
         Ok(())
     }
 
     /// Method to be invoked to handle state change notifications
-    pub fn update_handler<M: Fn(Change<Key, serde_json::Value>) -> () + Send + 'static>(&self, closure: M) -> Result<(), ZkStructError> {
+    pub fn update_handler<M: Fn(Change<Key, serde_json::Value>) + Send + 'static>(&self, closure: M) -> Result<(), ZkStructError> {
         let chan_handle = self.state.read().unwrap().chan_rx.clone();
         thread::spawn(move || {
             let rx = chan_handle;
@@ -118,18 +124,18 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
     ///
     /// The closure is passed a reference to the contents of the ZkState. Once the closure returns,
     /// the shared state in Zookeeper is committed and the write locks released.
-    pub fn update<M: FnOnce(&mut T) -> ()>(&self, closure: M) -> Result<(), ZkStructError> {
+    pub fn update<M: FnOnce(&mut T)>(&self, closure: M) -> Result<(), ZkStructError> {
         let path = format!("{}/payload", &self.state.read().unwrap().zk_path);
 
         // acquire write lock for the internal object
         let mut inner = self.inner.write().unwrap();
-        let mut state = self.state.write().unwrap();
+        let state = self.state.write().unwrap();
 
         // get write lock from zookeeper to prevent anyone from modifying this object while we're
         // committing it
         let latch_path = format!("{}/write_lock", &state.zk_path);
         let latch = zookeeper::recipes::leader::LeaderLatch::new(self.zk.clone(), self.id.clone(), latch_path);
-        latch.start();
+        latch.start()?;
 
         let mut total_time = 0;
         loop {
@@ -177,12 +183,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
 
     /// Returns a Result<RwLockReadGuard<T>>
     pub fn read(&self) -> Result<RwLockReadGuard<'_, T>, ZkStructError> {
-        let delta = (chrono::Utc::now() - self.state.read().unwrap().timings).num_milliseconds();
+        let state = self.state.read().unwrap();
+        let delta = (chrono::Utc::now() - state.timings).num_milliseconds();
         if delta > MAX_TIMING_DELTA {
             log::error!("attempted to read stale data. data is {}ms old, limit is {}ms", &delta, MAX_TIMING_DELTA);
             return Err(ZkStructError::StaleRead)
         }
-        log::debug!("reading internal data. data is {}ms old, limit is {}ms", &delta, MAX_TIMING_DELTA);
+        log::debug!("reading internal data. data is {}ms old, limit is {}ms. epoch is {}", &delta, MAX_TIMING_DELTA, state.epoch);
 
         match self.inner.read() {
             Ok(inner) => Ok(inner),
@@ -194,17 +201,40 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
     ///
     /// Preforms a check to make sure the local version is the same as the remote version before
     /// returning. If there is a mismatch, will preform a sync and return the latest object
-    pub fn c_read(&self) { }
+    pub fn c_read(&self) { unimplemented!() }
+
+    /// Dirty Read.
+    ///
+    /// Returns the local data, not failing if the data is too old
+    // TODO condense this code, with c_read, and read to remove some code reuse
+    pub fn d_read(&self) -> Result<RwLockReadGuard<'_, T>, ZkStructError> {
+        let state = self.state.read().unwrap();
+        let delta = (chrono::Utc::now() - state.timings).num_milliseconds();
+        if delta > MAX_TIMING_DELTA {
+            log::warn!("attempted to read stale data. data is {}ms old, limit is {}ms", &delta, MAX_TIMING_DELTA);
+        } else {
+            log::debug!("dirty reading internal data. data is {}ms old, limit is {}ms. epoch is {}", &delta, MAX_TIMING_DELTA, state.epoch);
+        }
+
+        match self.inner.read() {
+            Ok(inner) => Ok(inner),
+            Err(_) => Err(ZkStructError::Poisoned)
+        }
+    }
 
     pub fn metadata(&self) -> (usize, i32) {
         return (self.state.read().unwrap().chan_rx.len(), 0)
     }
+
+    /// Return the ID of this ZkState instance
+    pub fn get_id(&self) -> &String {
+        &self.id
+    }
 }
 
-fn handle_zk_watcher<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static>(ev: WatchedEvent, zk: Arc<ZooKeeper>, inner: Arc<RwLock<T>>, state: Arc<RwLock<InternalState>>) {
-    match ev.event_type {
-        WatchedEventType::NodeDataChanged => state_change(zk, inner, state),
-        _ => {} // we only want to know if the data has changed
+fn handle_zk_watcher<T: Serialize + DeserializeOwned + Send + Sync + 'static>(ev: WatchedEvent, zk: Arc<ZooKeeper>, inner: Arc<RwLock<T>>, state: Arc<RwLock<InternalState>>) {
+    if let WatchedEventType::NodeDataChanged = ev.event_type {
+        state_change(zk, inner, state)
     }
 }
 
@@ -222,7 +252,7 @@ pub enum Change<K, V> {
 
 /// Pull the full state from ZooKeeper, compare it to the current inner, Enqueue Changes, and then
 /// Update the inner field with the state
-fn state_change<'a, T: Serialize + DeserializeOwned + Send + Sync + 'static>(zk: Arc<ZooKeeper>, inner: Arc<RwLock<T>>, state: Arc<RwLock<InternalState>>) {
+fn state_change<T: Serialize + DeserializeOwned + Send + Sync + 'static>(zk: Arc<ZooKeeper>, inner: Arc<RwLock<T>>, state: Arc<RwLock<InternalState>>) {
     let start = Instant::now();
 
     let path = format!("{}/payload", &state.read().unwrap().zk_path);
