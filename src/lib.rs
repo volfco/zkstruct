@@ -130,10 +130,32 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         log::debug!("{} exists, continuing initialization", &path);
 
         state_change(self.zk.clone(), self.inner.clone(), self.state.clone());
-        // // Create a thread that will preform consistency monitoring
-        // thread::spawn(|| {
-        //
-        // });
+
+        // Create a thread that will ensure consistency in the background.
+        // TODO make the interval configurable
+        let zk = self.zk.clone();
+        let state = self.state.clone();
+        let inner = self.inner.clone();
+        thread::spawn(move || {
+            let zk = zk.clone();
+            let inner = inner.clone();
+            let state = state.clone();
+            loop {
+                thread::sleep(Duration::from_secs(5)); // TODO make this configurable
+
+                let handle = state.read().unwrap();
+                let path = format!("{}/payload", handle.zk_path);
+
+                if let Some(meta) = zk.exists(path.as_str(), false).unwrap() {
+                    if handle.epoch != meta.version {
+                        log::warn!("the remote epoch has drifted. local: {}. remote: {}", handle.epoch, meta.version);
+                        state_change(zk.clone(), inner.clone(), state.clone());
+                    }
+                    drop(handle);
+                    state.write().unwrap().timings = chrono::Utc::now();
+                }
+            }
+        });
 
         Ok(())
     }
