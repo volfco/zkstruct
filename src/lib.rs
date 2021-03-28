@@ -78,6 +78,42 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         Ok(r)
     }
 
+    pub fn expect(zk: Arc<ZooKeeper>, zk_path: String) -> anyhow::Result<Self> {
+        let instance_id = uuid::Uuid::new_v4();
+        log::debug!("starting zkstate");
+
+        // block, waiting for our initial state to show up in zookeeper
+        let (l_tx, l_rx) = crossbeam_channel::unbounded();
+        let raw_data = zk.get_data_w(format!("{}/payload", &zk_path).as_str(), move |ev| {
+            l_tx.send(());
+        });
+
+        let mut data = vec![];
+        if raw_data.is_ok() {
+            data = raw_data.unwrap().0;
+        } else {
+            let _ = l_rx.recv();
+            data = zk.get_data(format!("{}/payload", &zk_path).as_str(), false)?.0;
+        }
+
+        let (chan_tx, chan_rx) = crossbeam_channel::unbounded();
+        let r = Self {
+            id: instance_id.to_string(),
+            zk,
+            inner: Arc::new(RwLock::new(serde_json::from_slice(data.as_slice()).unwrap())),
+            state: Arc::new(RwLock::new(InternalState {
+                zk_path,
+                epoch: 0,
+                timings: chrono::Utc::now(),
+                emit_updates: true,
+                chan_rx,
+                chan_tx
+            }))
+        };
+        r.initialize()?;
+        Ok(r)
+    }
+
     fn initialize(&self) -> ZkResult<()> {
         let path = format!("{}/payload", &self.state.read().unwrap().zk_path);
         // if the path doesn't exist, let's make it and populate it
