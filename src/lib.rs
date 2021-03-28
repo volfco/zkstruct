@@ -84,13 +84,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
 
         // block, waiting for our initial state to show up in zookeeper
         let (l_tx, l_rx) = crossbeam_channel::unbounded();
-        let raw_data = zk.get_data_w(format!("{}/payload", &zk_path).as_str(), move |ev| {
-            l_tx.send(());
+        let raw_data = zk.get_data_w(format!("{}/payload", &zk_path).as_str(), move |_| {
+            let _ = l_tx.send(());
         });
 
         let mut data = vec![];
-        if raw_data.is_ok() {
-            data = raw_data.unwrap().0;
+        if let Ok(inner) = raw_data {
+            data = inner.0;
         } else {
             let _ = l_rx.recv();
             data = zk.get_data(format!("{}/payload", &zk_path).as_str(), false)?.0;
@@ -137,9 +137,9 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
         let state = self.state.clone();
         let inner = self.inner.clone();
         thread::spawn(move || {
-            let zk = zk.clone();
-            let inner = inner.clone();
-            let state = state.clone();
+            let zk = zk;
+            let inner = inner;
+            let state = state;
             loop {
                 thread::sleep(Duration::from_secs(5)); // TODO make this configurable
 
