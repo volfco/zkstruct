@@ -4,10 +4,11 @@ use serde::{Serialize};
 use serde::de::DeserializeOwned;
 pub use treediff::{value::Key, diff, tools::ChangeType};
 use std::time::{Instant, Duration};
-use std::thread;
+use std::{thread, fmt};
 use std::sync::RwLockReadGuard;
 use serde_json::Value;
 use crossbeam_channel::Receiver;
+use std::fmt::Debug;
 
 const MAX_TIMING_DELTA: i64 = 30000; // ms
 const LOCK_POLL_INTERVAL: u64 = 5; // ms
@@ -30,6 +31,7 @@ impl From<ZkError> for ZkStructError {
     }
 }
 
+#[derive(Debug)]
 struct InternalState {
     /// Path of the ZkStruct Dir
     zk_path: String,
@@ -55,7 +57,6 @@ pub struct ZkState<T: Serialize + DeserializeOwned + Send + Sync> {
     state: Arc<RwLock<InternalState>>
 }
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
-
     pub fn new(zk: Arc<ZooKeeper>, zk_path: String, initial_state: T) -> anyhow::Result<Self> {
         let instance_id = uuid::Uuid::new_v4();
         log::debug!("starting zkstate");
@@ -88,7 +89,7 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
             let _ = l_tx.send(());
         });
 
-        let mut data = vec![];
+        let data;
         if let Ok(inner) = raw_data {
             data = inner.0;
         } else {
@@ -287,6 +288,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> ZkState<T> {
     /// Return the ID of this ZkState instance
     pub fn get_id(&self) -> &String {
         &self.id
+    }
+}
+impl<T: Serialize + DeserializeOwned + Send + Sync + Debug + 'static> fmt::Debug for ZkState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ZkState{{ id: {}, inner: {:?}, state: {:?} }}", self.id, &*self.inner.read().unwrap(), &*self.state.read().unwrap())
     }
 }
 
