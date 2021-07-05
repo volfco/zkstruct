@@ -1,7 +1,7 @@
 [package]
 name = "zkstate"
 description = "Share a struct across multiple instances of an application using zookeeper"
-version = "0.1.12"
+version = "0.1.13"
 authors = ["Colum McGaley <colum.mcgaley@fastmail.com>"]
 edition = "2018"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ readme = "README.md"
 
 
 [dependencies]
-zookeeper = "0.5"
+zookeeper = "0.6"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 treediff = { version = "4.0", features = ["with-serde-json"] }
